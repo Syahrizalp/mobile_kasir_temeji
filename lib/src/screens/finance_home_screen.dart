@@ -1,0 +1,62 @@
+import 'package:flutter/material.dart';
+import '../services/session.dart';
+import 'login_screen.dart';
+
+class FinanceHomeScreen extends StatelessWidget {
+  const FinanceHomeScreen({super.key});
+
+  Future<void> _confirmLogout(BuildContext context) async {
+    final bool? konfirmasi = await showDialog<bool>(
+      context: context,
+      builder: (ctx) {
+        return AlertDialog(
+          title: const Text('Konfirmasi Logout'),
+          content: const Text('Apakah Anda yakin ingin keluar dari aplikasi?'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(false), // batal
+              child: const Text('Batal'),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.red,
+              ),
+              onPressed: () => Navigator.of(ctx).pop(true), // setuju
+              child: const Text('Logout'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (konfirmasi == true) {
+      await Session.logout();
+      if (context.mounted) {
+        Navigator.of(context).pushAndRemoveUntil(
+          MaterialPageRoute(builder: (_) => const LoginScreen()),
+          (r) => false,
+        );
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Finance - Laporan'), actions: [
+        IconButton(
+          onPressed: () => _confirmLogout(context),
+          icon: const Icon(Icons.logout),
+        ),
+      ]),
+      body: ListView(
+        padding: const EdgeInsets.all(16),
+        children: const [
+          ListTile(leading: Icon(Icons.bar_chart), title: Text('Laporan Harian')),
+          ListTile(leading: Icon(Icons.query_stats), title: Text('Laporan Bulanan')),
+          ListTile(leading: Icon(Icons.summarize), title: Text('Rekap Pajak')),
+        ],
+      ),
+    );
+  }
+}
