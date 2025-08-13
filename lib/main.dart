@@ -2,8 +2,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'src/screens/login_screen.dart';
 import 'src/screens/splash_screen.dart';
+import 'package:flutter/material.dart';
+import 'package:intl/date_symbol_data_local.dart';
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await initializeDateFormatting('id_ID', null);
   // Orientasi default saat boot; akan dioverride di runtime per-perangkat.
   await SystemChrome.setPreferredOrientations([
     DeviceOrientation.portraitUp,

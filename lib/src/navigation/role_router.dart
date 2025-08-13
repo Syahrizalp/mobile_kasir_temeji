@@ -3,7 +3,7 @@ import '../services/session.dart';
 import '../screens/admin_home_screen.dart';
 import '../screens/finance_home_screen.dart';
 import '../screens/owner_home_screen.dart';
-import '../screens/pos_home_screen.dart'; // kasir
+import '../screens/kasir_form_screen.dart'; // kasir
 
 class RoleRouter {
   /// Panggil setelah login sukses atau saat splash.
@@ -20,7 +20,7 @@ class RoleRouter {
         page = const AdminHomeScreen();
         break;
       case 'kasir':
-        page = const PosHomeScreen();
+        page = const KasirFormScreen();
         break;
       case 'finance':
         page = const FinanceHomeScreen();
@@ -29,7 +29,7 @@ class RoleRouter {
         page = const OwnerHomeScreen();
         break;
       default:
-        page = const PosHomeScreen(); // fallback
+        page = const KasirFormScreen(); // fallback
     }
 
     if (!context.mounted) return;
