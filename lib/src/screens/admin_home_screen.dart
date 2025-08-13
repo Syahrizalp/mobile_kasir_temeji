@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../services/session.dart';
 import 'login_screen.dart';
 import 'admin_user_list_screen.dart';
+import 'admin_menu_list_screen.dart';
 
 class AdminHomeScreen extends StatelessWidget {
   const AdminHomeScreen({super.key});
@@ -61,8 +62,16 @@ class AdminHomeScreen extends StatelessWidget {
                 MaterialPageRoute(builder: (_) => const AdminUserListScreen()),
               );
             },
+          ), 
+          ListTile(
+            leading: const Icon(Icons.restaurant_menu),
+            title: const Text('Kelola Menu'),
+            onTap: () {
+              Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const AdminMenuListScreen()),
+              );
+            },
           ),
-          const ListTile(leading: Icon(Icons.restaurant_menu), title: Text('Kelola Menu')),
           const ListTile(leading: Icon(Icons.receipt_long), title: Text('Semua Transaksi')),
           const ListTile(leading: Icon(Icons.settings), title: Text('Pengaturan Toko')),
         ],
