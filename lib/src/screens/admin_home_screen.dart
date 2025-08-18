@@ -3,6 +3,8 @@ import '../services/session.dart';
 import 'login_screen.dart';
 import 'admin_user_list_screen.dart';
 import 'admin_menu_list_screen.dart';
+import 'admin_transaksi_list_screen.dart';
+import 'admin_setting_screen.dart';
 
 class AdminHomeScreen extends StatelessWidget {
   const AdminHomeScreen({super.key});
@@ -72,8 +74,24 @@ class AdminHomeScreen extends StatelessWidget {
               );
             },
           ),
-          const ListTile(leading: Icon(Icons.receipt_long), title: Text('Semua Transaksi')),
-          const ListTile(leading: Icon(Icons.settings), title: Text('Pengaturan Toko')),
+          ListTile(
+            leading: const Icon(Icons.receipt_long),
+            title: const Text('Semua Transaksi'),
+            onTap: () {
+              Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const AdminTransaksiListScreen()),
+              );
+            },
+          ),
+          ListTile(
+            leading: const Icon(Icons.settings),
+            title: const Text('Pengaturan Toko'),
+            onTap: () {
+              Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const AdminSettingsScreen()),
+              );
+            },
+          ),
         ],
       ),
     );

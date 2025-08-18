@@ -36,7 +36,15 @@
          https://developer.android.com/reference/android/content/Intent#ACTION_PROCESS_TEXT.
 
          In particular, this is used by the Flutter engine in io.flutter.plugin.text.ProcessTextPlugin. -->
-    
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
+    <!-- Optional untuk < Android 12 -->
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30"/>
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30"/>
+    <!-- Kadang dibutuhkan untuk menemukan perangkat bluetooth lama -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+
     <queries>
         <intent>
             <action android:name="android.intent.action.PROCESS_TEXT"/>
