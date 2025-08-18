@@ -5,7 +5,6 @@ import 'package:flutter/services.dart';
 
 import '../repositories/user_dao.dart';
 import '../services/session.dart';
-import 'pos_home_screen.dart';
 import '../navigation/role_router.dart';
 
 class LoginScreen extends StatefulWidget {
