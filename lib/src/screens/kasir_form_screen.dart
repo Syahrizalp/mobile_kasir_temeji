@@ -1,6 +1,7 @@
 // lib/src/screens/kasir_form_screen.dart
 import 'dart:async';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
@@ -10,9 +11,14 @@ import '../services/db.dart';
 import '../repositories/menu_dao.dart';
 import '../models/menu.dart';
 import 'login_screen.dart';
+import 'printer_setting_screen.dart';
 
-// ESC/POS builder (untuk membuat bytes struk). Koneksinya via TCP Socket.
+// ESC/POS builder (membuat bytes struk)
 import 'package:esc_pos_utils/esc_pos_utils.dart';
+
+// Kirim ke printer (Bluetooth / Network / USB) — satu API
+import 'package:flutter_pos_printer_platform/flutter_pos_printer_platform.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class _CartLine {
   final int idMenu;
@@ -40,6 +46,7 @@ class KasirFormScreen extends StatefulWidget {
 }
 
 class _KasirFormScreenState extends State<KasirFormScreen> {
+  // ---------- DAO / State ----------
   final _menuDao = MenuDao();
 
   // katalog + pencarian
@@ -54,12 +61,10 @@ class _KasirFormScreenState extends State<KasirFormScreen> {
   double get _total => _cart.values.fold(0.0, (p, e) => p + e.subtotal);
 
   double get _bayar {
-    // toleran dengan titik ribuan & koma desimal
     final raw = _bayarCtrl.text.trim().replaceAll('.', '').replaceAll(',', '.');
     return double.tryParse(raw) ?? 0.0;
   }
 
-  // tampilkan kembalian minimal 0 (tidak negatif saat user sedang mengetik)
   double get _kembali => (_bayar - _total).clamp(0, double.infinity);
 
   // info kasir dari Session
@@ -67,27 +72,128 @@ class _KasirFormScreenState extends State<KasirFormScreen> {
   int? _kasirId;
   String _kasirLevel = '-';
 
-  // Network printing (TCP/IP)
+  // ---------- Printer Prefs ----------
   bool _printEnabled = false;
-  final _ipCtrl = TextEditingController(text: '192.168.1.100');
-  final _portCtrl = TextEditingController(text: '9100');
+  String? _btMac; // kalau Bluetooth dipakai
+  String? _btName;
+  String? _lanIp; // kalau LAN dipakai
+  int? _lanPort;
+
+  
+  // hint text status printer di UI
+  String get _printerStatusText {
+    if (!_printEnabled) return 'Printer: Disabled';
+    if ((_lanIp?.isNotEmpty ?? false) && (_lanPort ?? 0) > 0) {
+      return 'Printer: LAN $_lanIp:$_lanPort';
+    }
+    if ((_btMac?.isNotEmpty ?? false)) {
+      return 'Printer: BT ${_btName ?? _btMac}';
+    }
+    return 'Printer: Not configured';
+  }
 
   @override
   void initState() {
     super.initState();
     _initKasir();
     _loadKatalog();
+    _loadPrinterPrefs();
   }
 
   @override
   void dispose() {
     _searchCtrl.dispose();
     _bayarCtrl.dispose();
-    _ipCtrl.dispose();
-    _portCtrl.dispose();
     super.dispose();
   }
 
+  // ---------- Dialog konfirmasi ----------
+  Future<bool> _showConfirmPaymentDialog() async {
+    final fmtRp = NumberFormat.currency(locale: 'id_ID', symbol: 'Rp ');
+    return (await showDialog<bool>(
+          context: context,
+          barrierDismissible: false,
+          builder: (ctx) {
+            final listHeight = (_cart.length <= 4) ? (_cart.length * 44.0) : 200.0;
+            return AlertDialog(
+              title: const Text('Konfirmasi Pembayaran'),
+              content: SizedBox(
+                width: 360,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text('Total', style: TextStyle(fontWeight: FontWeight.w600)),
+                        Text(fmtRp.format(_total), style: const TextStyle(fontWeight: FontWeight.w600)),
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text('Bayar'),
+                        Text(fmtRp.format(_bayar)),
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text('Kembalian'),
+                        Text(fmtRp.format(_kembali.isFinite ? _kembali : 0)),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    const Divider(),
+                    const Text('Item yang dipesan:', style: TextStyle(fontWeight: FontWeight.w600)),
+                    const SizedBox(height: 6),
+                    SizedBox(
+                      height: listHeight,
+                      child: ListView.separated(
+                        shrinkWrap: true,
+                        itemCount: _cart.length,
+                        separatorBuilder: (_, __) => const Divider(height: 1),
+                        itemBuilder: (_, i) {
+                          final it = _cart.values.elementAt(i);
+                          final fmt = NumberFormat.currency(locale: 'id_ID', symbol: 'Rp ');
+                          return Row(
+                            children: [
+                              Expanded(
+                                child: Text(it.nama, maxLines: 1, overflow: TextOverflow.ellipsis),
+                              ),
+                              const SizedBox(width: 8),
+                              Text('${it.qty} x ${fmt.format(it.harga)}'),
+                              const SizedBox(width: 8),
+                              Text(fmt.format(it.subtotal), style: const TextStyle(fontWeight: FontWeight.w600)),
+                            ],
+                          );
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(ctx).pop(false),
+                  child: const Text('Batal'),
+                ),
+                FilledButton.icon(
+                  icon: const Icon(Icons.check),
+                  onPressed: () => Navigator.of(ctx).pop(true),
+                  label: const Text('Lanjutkan'),
+                ),
+              ],
+            );
+          },
+        )) ??
+        false;
+  }
+
+  // ---------- Init ----------
   Future<void> _initKasir() async {
     final u = await Session.currentUser();
     setState(() {
@@ -104,15 +210,29 @@ class _KasirFormScreenState extends State<KasirFormScreen> {
       setState(() => _katalog = list);
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Gagal memuat menu: $e')),
-      );
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Gagal memuat menu: $e')));
     } finally {
       if (mounted) setState(() => _loadingKatalog = false);
     }
   }
 
-  // ------------------- Helper gambar aman -------------------
+  Future<void> _loadPrinterPrefs() async {
+    final sp = await SharedPreferences.getInstance();
+    setState(() {
+      _printEnabled = sp.getBool('print_enabled') ?? false;
+
+      // LAN
+      _lanIp = sp.getString('printer_ip');
+      final p = sp.getInt('printer_port');
+      _lanPort = p == null || p <= 0 ? null : p;
+
+      // Bluetooth
+      _btMac = sp.getString('printer_mac');
+      _btName = sp.getString('printer_name');
+    });
+  }
+
+  // ---------- Helpers ----------
   bool _imgExists(String p) {
     try {
       return p.isNotEmpty && File(p).existsSync();
@@ -121,7 +241,6 @@ class _KasirFormScreenState extends State<KasirFormScreen> {
     }
   }
 
-  // ------------------- Keranjang -------------------
   void _addToCart(MenuItem m) {
     final line = _cart[m.idMenu!] ??
         _CartLine(
@@ -156,19 +275,8 @@ class _KasirFormScreenState extends State<KasirFormScreen> {
     });
   }
 
-  // ------------------- Cetak via TCP -------------------
-  Future<void> _sendToNetworkPrinter(String ip, int port, List<int> bytes) async {
-    Socket? socket;
-    try {
-      socket = await Socket.connect(ip, port, timeout: const Duration(seconds: 5));
-      socket.add(bytes);
-      await socket.flush();
-    } finally {
-      await socket?.close();
-    }
-  }
-
-  Future<void> _printReceiptNetwork({
+  // ---------- Buat bytes struk ----------
+  Future<Uint8List> _buildReceiptBytes({
     required String idTrx,
     required DateTime waktu,
     required List<_CartLine> items,
@@ -177,126 +285,121 @@ class _KasirFormScreenState extends State<KasirFormScreen> {
     required double kembali,
     String toko = 'TEMEJI CAFE',
   }) async {
-    if (!_printEnabled) return; // toggle OFF => skip
+    final profile = await CapabilityProfile.load();
+    final generator = Generator(PaperSize.mm58, profile);
+    final bytes = <int>[];
 
-    // Validasi IP / Port
-    final ip = _ipCtrl.text.trim();
-    final port = int.tryParse(_portCtrl.text.trim());
-    final ipOk = RegExp(r'^(\d{1,3}\.){3}\d{1,3}$').hasMatch(ip);
-    if (!ipOk || port == null || port <= 0) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('IP/Port tidak valid')),
-      );
+    final fmtRp = NumberFormat.currency(locale: 'id_ID', symbol: 'Rp ');
+    final fmtDate = DateFormat('dd/MM/yyyy HH:mm');
+
+    bytes.addAll(generator.text(
+      toko,
+      styles: const PosStyles(
+        align: PosAlign.center,
+        height: PosTextSize.size2,
+        width: PosTextSize.size2,
+        bold: true,
+      ),
+    ));
+    bytes.addAll(generator.text('Jl. Contoh Alamat No. 1', styles: const PosStyles(align: PosAlign.center)));
+    bytes.addAll(generator.text('Telp 08xx-xxxx-xxxx', styles: const PosStyles(align: PosAlign.center)));
+    bytes.addAll(generator.hr());
+
+    bytes.addAll(generator.row([
+      PosColumn(text: 'Kasir', width: 4),
+      PosColumn(text: ': $_kasirName', width: 8),
+    ]));
+    bytes.addAll(generator.row([
+      PosColumn(text: 'Tanggal', width: 4),
+      PosColumn(text: ': ${fmtDate.format(waktu)}', width: 8),
+    ]));
+    bytes.addAll(generator.row([
+      PosColumn(text: 'ID', width: 4),
+      PosColumn(text: ': $idTrx', width: 8),
+    ]));
+    bytes.addAll(generator.hr());
+
+    for (final it in items) {
+      bytes.addAll(generator.text(it.nama, styles: const PosStyles(bold: true)));
+      final hrg = fmtRp.format(it.harga);
+      final sub = fmtRp.format(it.subtotal);
+      bytes.addAll(generator.row([
+        PosColumn(text: '${it.qty} x $hrg', width: 6),
+        PosColumn(text: sub, width: 6, styles: const PosStyles(align: PosAlign.right)),
+      ]));
+    }
+    bytes.addAll(generator.hr());
+
+    bytes.addAll(generator.row([
+      PosColumn(text: 'TOTAL', width: 6, styles: const PosStyles(bold: true)),
+      PosColumn(text: fmtRp.format(total), width: 6, styles: const PosStyles(align: PosAlign.right, bold: true)),
+    ]));
+    bytes.addAll(generator.row([
+      PosColumn(text: 'Bayar', width: 6),
+      PosColumn(text: fmtRp.format(bayar), width: 6, styles: const PosStyles(align: PosAlign.right)),
+    ]));
+    bytes.addAll(generator.row([
+      PosColumn(text: 'Kembali', width: 6),
+      PosColumn(text: fmtRp.format(kembali), width: 6, styles: const PosStyles(align: PosAlign.right)),
+    ]));
+    bytes.addAll(generator.hr(ch: '=', linesAfter: 1));
+    bytes.addAll(generator.text('Terima kasih 🙏', styles: const PosStyles(align: PosAlign.center)));
+    bytes.addAll(generator.feed(2));
+    bytes.addAll(generator.cut());
+
+    return Uint8List.fromList(bytes);
+  }
+
+  // ---------- Kirim ke printer (flutter_pos_printer_platform) ----------
+  Future<void> _sendToSelectedPrinter(Uint8List bytes) async {
+    if (!_printEnabled) return;
+
+    // Pakai LAN jika tersedia, selain itu fallback ke BT jika MAC ada.
+    if ((_lanIp?.isNotEmpty ?? false) && (_lanPort ?? 0) > 0) {
+      final model = TcpPrinterInput(ipAddress: _lanIp!, port: _lanPort!);
+      await PrinterManager.instance.connect(type: PrinterType.network, model: model);
+      await PrinterManager.instance.send(type: PrinterType.network, bytes: bytes);
+      await PrinterManager.instance.disconnect(type: PrinterType.network);
       return;
     }
 
-    try {
-      final profile = await CapabilityProfile.load();
-      final generator = Generator(PaperSize.mm58, profile);
-      final bytes = <int>[];
-
-      final fmtRp = NumberFormat.currency(locale: 'id_ID', symbol: 'Rp ');
-      final fmtDate = DateFormat('dd/MM/yyyy HH:mm');
-
-      // Header
-      bytes.addAll(generator.text(
-        toko,
-        styles: const PosStyles(
-          align: PosAlign.center,
-          height: PosTextSize.size2,
-          width: PosTextSize.size2,
-          bold: true,
-        ),
-      ));
-      bytes.addAll(generator.text('Jl. Contoh Alamat No. 1',
-          styles: const PosStyles(align: PosAlign.center)));
-      bytes.addAll(generator.text('Telp 08xx-xxxx-xxxx',
-          styles: const PosStyles(align: PosAlign.center)));
-      bytes.addAll(generator.hr());
-
-      bytes.addAll(generator.row([
-        PosColumn(text: 'Kasir', width: 4),
-        PosColumn(text: ': $_kasirName', width: 8),
-      ]));
-      bytes.addAll(generator.row([
-        PosColumn(text: 'Tanggal', width: 4),
-        PosColumn(text: ': ${fmtDate.format(waktu)}', width: 8),
-      ]));
-      bytes.addAll(generator.row([
-        PosColumn(text: 'ID', width: 4),
-        PosColumn(text: ': $idTrx', width: 8),
-      ]));
-      bytes.addAll(generator.hr());
-
-      // Items
-      for (final it in items) {
-        bytes.addAll(generator.text(it.nama, styles: const PosStyles(bold: true)));
-        final hrg = fmtRp.format(it.harga);
-        final sub = fmtRp.format(it.subtotal);
-        bytes.addAll(generator.row([
-          PosColumn(text: '${it.qty} x $hrg', width: 6),
-          PosColumn(text: sub, width: 6, styles: const PosStyles(align: PosAlign.right)),
-        ]));
-      }
-      bytes.addAll(generator.hr());
-
-      // Total
-      bytes.addAll(generator.row([
-        PosColumn(text: 'TOTAL', width: 6, styles: const PosStyles(bold: true)),
-        PosColumn(
-          text: fmtRp.format(total),
-          width: 6,
-          styles: const PosStyles(align: PosAlign.right, bold: true),
-        ),
-      ]));
-      bytes.addAll(generator.row([
-        PosColumn(text: 'Bayar', width: 6),
-        PosColumn(text: fmtRp.format(bayar), width: 6, styles: const PosStyles(align: PosAlign.right)),
-      ]));
-      bytes.addAll(generator.row([
-        PosColumn(text: 'Kembali', width: 6),
-        PosColumn(text: fmtRp.format(kembali), width: 6, styles: const PosStyles(align: PosAlign.right)),
-      ]));
-      bytes.addAll(generator.hr(ch: '=', linesAfter: 1));
-      bytes.addAll(generator.text('Terima kasih 🙏', styles: const PosStyles(align: PosAlign.center)));
-      bytes.addAll(generator.feed(2));
-      bytes.addAll(generator.cut());
-
-      await _sendToNetworkPrinter(ip, port, bytes);
-
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Struk terkirim ke $ip:$port')),
+    if ((_btMac?.isNotEmpty ?? false)) {
+      // Note: isBle = false untuk kebanyakan printer thermal serial BT klasik
+      final model = BluetoothPrinterInput(
+        name: _btName ?? 'BT-Thermal',
+        address: _btMac!,
+        isBle: false,
+        autoConnect: true,
       );
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Gagal cetak: $e')),
-      );
+      await PrinterManager.instance.connect(type: PrinterType.bluetooth, model: model);
+      await PrinterManager.instance.send(type: PrinterType.bluetooth, bytes: bytes);
+      await PrinterManager.instance.disconnect(type: PrinterType.bluetooth);
+      return;
     }
+
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Printer belum dikonfigurasi. Buka Pengaturan Printer.')),
+    );
   }
 
-  // ------------------- Simpan transaksi -------------------
+  // ---------- Simpan transaksi ----------
   Future<void> _confirmPayment() async {
     if (_cart.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Keranjang masih kosong')),
-      );
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Keranjang masih kosong')));
       return;
     }
     if (_bayar < _total) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Uang bayar kurang dari total')),
-      );
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Uang bayar kurang dari total')));
       return;
     }
     if (_kasirId == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Session kasir tidak valid')),
-      );
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Session kasir tidak valid')));
       return;
     }
+
+    final setuju = await _showConfirmPaymentDialog();
+    if (!setuju) return;
 
     final now = DateTime.now();
     final idTrx = 'TRX${DateFormat('yyyyMMddHHmmss').format(now)}';
@@ -329,7 +432,6 @@ class _KasirFormScreenState extends State<KasirFormScreen> {
             'subtotal': line.subtotal,
           });
 
-          // (opsional) kurangi stok
           await txn.rawUpdate(
             'UPDATE menu SET stok = CASE WHEN stok >= ? THEN stok - ? ELSE 0 END WHERE id_menu = ?',
             [line.qty, line.qty, line.idMenu],
@@ -343,27 +445,26 @@ class _KasirFormScreenState extends State<KasirFormScreen> {
         });
       });
 
-      // Cetak via TCP (opsional)
-      await _printReceiptNetwork(
-        idTrx: idTrx,
-        waktu: now,
-        items: _cart.values.toList(),
-        total: _total,
-        bayar: _bayar,
-        kembali: _kembali,
-      );
+      // Cetak jika enabled
+      if (_printEnabled) {
+        final bytes = await _buildReceiptBytes(
+          idTrx: idTrx,
+          waktu: now,
+          items: _cart.values.toList(),
+          total: _total,
+          bayar: _bayar,
+          kembali: _kembali,
+        );
+        await _sendToSelectedPrinter(bytes);
+      }
 
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Pembayaran berhasil (ID: $idTrx)')),
-      );
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Pembayaran berhasil (ID: $idTrx)')));
       _clearCart();
       _loadKatalog(keyword: _searchCtrl.text.trim().isEmpty ? null : _searchCtrl.text.trim());
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Gagal simpan transaksi: $e')),
-      );
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Gagal simpan transaksi: $e')));
     }
   }
 
@@ -393,6 +494,7 @@ class _KasirFormScreenState extends State<KasirFormScreen> {
     }
   }
 
+  // ---------- UI ----------
   @override
   Widget build(BuildContext context) {
     final isTablet = MediaQuery.of(context).size.shortestSide >= 600;
@@ -413,7 +515,7 @@ class _KasirFormScreenState extends State<KasirFormScreen> {
       ),
       body: Row(
         children: [
-          // KIRI: waktu, setting cetak, katalog, pencarian
+          // KIRI: waktu, printer status, katalog, pencarian
           Expanded(
             flex: 6,
             child: Column(
@@ -424,54 +526,36 @@ class _KasirFormScreenState extends State<KasirFormScreen> {
                     children: [
                       const Icon(Icons.access_time),
                       const SizedBox(width: 8),
-                      // Jam realtime hemat rebuild
                       StreamBuilder<int>(
                         stream: Stream.periodic(const Duration(seconds: 1), (i) => i),
                         builder: (context, _) {
-                          return Text(
-                            fmtDate.format(DateTime.now()),
-                            style: Theme.of(context).textTheme.titleMedium,
-                          );
+                          return Text(fmtDate.format(DateTime.now()), style: Theme.of(context).textTheme.titleMedium);
                         },
                       ),
                       const Spacer(),
-                      // Toggle printing + IP/Port
+                      // Status printer + tombol ke setting
                       Row(
                         children: [
-                          const Text('Cetak struk'),
-                          Switch(
-                            value: _printEnabled,
-                            onChanged: (v) => setState(() => _printEnabled = v),
-                          ),
-                          if (_printEnabled)
-                            SizedBox(
-                              width: isTablet ? 440 : 320,
-                              child: Row(
-                                children: [
-                                  Expanded(
-                                    child: TextField(
-                                      controller: _ipCtrl,
-                                      decoration: const InputDecoration(
-                                        isDense: true,
-                                        labelText: 'IP Printer',
-                                      ),
-                                    ),
-                                  ),
-                                  const SizedBox(width: 8),
-                                  SizedBox(
-                                    width: 90,
-                                    child: TextField(
-                                      controller: _portCtrl,
-                                      keyboardType: TextInputType.number,
-                                      decoration: const InputDecoration(
-                                        isDense: true,
-                                        labelText: 'Port',
-                                      ),
-                                    ),
-                                  ),
-                                ],
-                              ),
+                          Chip(
+                            avatar: Icon(
+                              _printEnabled ? Icons.print : Icons.print_disabled,
+                              size: 18,
+                              color: _printEnabled ? Colors.green : Colors.red,
                             ),
+                            label: Text(_printerStatusText),
+                          ),
+                          IconButton(
+                            tooltip: 'Pengaturan Printer',
+                            icon: const Icon(Icons.settings),
+                            onPressed: () async {
+                              await Navigator.push(
+                                context,
+                                MaterialPageRoute(builder: (_) => const PrinterSettingScreen()),
+                              );
+                              // refresh prefs ketika balik
+                              await _loadPrinterPrefs();
+                            },
+                          ),
                         ],
                       ),
                     ],
@@ -498,7 +582,7 @@ class _KasirFormScreenState extends State<KasirFormScreen> {
                   ),
                 ),
 
-                // Katalog
+                // Katalog (tampilkan harga + stok)
                 Expanded(
                   child: _loadingKatalog
                       ? const Center(child: CircularProgressIndicator())
@@ -518,6 +602,7 @@ class _KasirFormScreenState extends State<KasirFormScreen> {
                                   final m = _katalog[i];
                                   final imgOk = _imgExists(m.pathGambar);
                                   final qty = _cart[m.idMenu!]?.qty ?? 0;
+                                  final fmt = NumberFormat.currency(locale: 'id_ID', symbol: 'Rp ');
 
                                   return Card(
                                     elevation: 2,
@@ -550,9 +635,9 @@ class _KasirFormScreenState extends State<KasirFormScreen> {
                                                   style: const TextStyle(fontWeight: FontWeight.w600),
                                                 ),
                                                 const SizedBox(height: 2),
-                                                Text(
-                                                  NumberFormat.currency(locale: 'id_ID', symbol: 'Rp ').format(m.harga),
-                                                ),
+                                                Text(fmt.format(m.harga)),
+                                                const SizedBox(height: 2),
+                                                Text('Stok: ${m.stok}', style: TextStyle(color: Colors.grey.shade600)),
                                                 const SizedBox(height: 6),
                                                 Row(
                                                   children: [
@@ -586,9 +671,7 @@ class _KasirFormScreenState extends State<KasirFormScreen> {
           Expanded(
             flex: 4,
             child: Container(
-              decoration: BoxDecoration(
-                border: Border(left: BorderSide(color: Colors.grey.shade300)),
-              ),
+              decoration: BoxDecoration(border: Border(left: BorderSide(color: Colors.grey.shade300))),
               child: Column(
                 children: [
                   const Padding(
@@ -607,29 +690,20 @@ class _KasirFormScreenState extends State<KasirFormScreen> {
                             itemBuilder: (context, i) {
                               final line = _cart.values.elementAt(i);
                               final hasImg = _imgExists(line.imgPath ?? '');
+                              final fmt = NumberFormat.currency(locale: 'id_ID', symbol: 'Rp ');
                               return ListTile(
                                 leading: hasImg
                                     ? ClipRRect(
                                         borderRadius: BorderRadius.circular(6),
-                                        child: Image.file(
-                                          File(line.imgPath!),
-                                          width: 48,
-                                          height: 48,
-                                          fit: BoxFit.cover,
-                                        ),
+                                        child: Image.file(File(line.imgPath!), width: 48, height: 48, fit: BoxFit.cover),
                                       )
                                     : const SizedBox(width: 48, height: 48, child: Icon(Icons.image_outlined)),
                                 title: Text(line.nama),
-                                subtitle: Text(
-                                  '${line.qty} x ${NumberFormat.currency(locale: "id_ID", symbol: "Rp ").format(line.harga)}',
-                                ),
+                                subtitle: Text('${line.qty} x ${fmt.format(line.harga)}'),
                                 trailing: Column(
                                   mainAxisAlignment: MainAxisAlignment.center,
                                   children: [
-                                    Text(
-                                      NumberFormat.currency(locale: 'id_ID', symbol: 'Rp ').format(line.subtotal),
-                                      style: const TextStyle(fontWeight: FontWeight.w600),
-                                    ),
+                                    Text(fmt.format(line.subtotal), style: const TextStyle(fontWeight: FontWeight.w600)),
                                     TextButton(
                                       onPressed: () => _removeLine(line.idMenu),
                                       child: const Text('Hapus', style: TextStyle(color: Colors.red)),
@@ -645,11 +719,7 @@ class _KasirFormScreenState extends State<KasirFormScreen> {
                     padding: const EdgeInsets.all(12),
                     child: Column(
                       children: [
-                        _rowKV(
-                          'Total',
-                          NumberFormat.currency(locale: 'id_ID', symbol: 'Rp ').format(_total),
-                          bold: true,
-                        ),
+                        _rowKV('Total', NumberFormat.currency(locale: 'id_ID', symbol: 'Rp ').format(_total), bold: true),
                         const SizedBox(height: 8),
                         TextField(
                           controller: _bayarCtrl,
@@ -663,8 +733,7 @@ class _KasirFormScreenState extends State<KasirFormScreen> {
                         const SizedBox(height: 8),
                         _rowKV(
                           'Kembalian',
-                          NumberFormat.currency(locale: 'id_ID', symbol: 'Rp ')
-                              .format(_kembali.isFinite ? _kembali : 0),
+                          NumberFormat.currency(locale: 'id_ID', symbol: 'Rp ').format(_kembali.isFinite ? _kembali : 0),
                         ),
                         const SizedBox(height: 12),
                         Row(

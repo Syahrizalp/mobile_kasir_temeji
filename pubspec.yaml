@@ -16,7 +16,8 @@ dependencies:
   shared_preferences: ^2.2.3
   image_picker: ^1.0.7
   path_provider: ^2.1.2          
-  # flutter_pos_printer_platform: ^1.3.0
+  flutter_pos_printer_platform:
+    path: plugins/flutter_pos_printer_platform
   esc_pos_utils: ^1.1.0
 
   # HAPUS esc_pos_utils jika tidak dipakai:

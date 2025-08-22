@@ -1,0 +1,35 @@
+plugins {
+    id 'com.android.library'
+    id 'org.jetbrains.kotlin.android'
+}
+
+android {
+    // samakan dengan "package" di AndroidManifest.xml plugin ini
+    namespace "com.sersoluciones.flutter_pos_printer_platform"
+
+    compileSdk 34
+
+    defaultConfig {
+        minSdk 21
+        // targetSdk opsional (ikuti root project), boleh tambahkan:
+        // targetSdk 34
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+    kotlinOptions {
+        jvmTarget = '1.8'
+    }
+
+    sourceSets {
+        main.java.srcDirs += 'src/main/kotlin'
+    }
+}
+
+dependencies {
+    // tidak perlu pin versi Kotlin di modul — akan ikut versi dari root (Flutter)
+    implementation "org.jetbrains.kotlin:kotlin-stdlib"
+}
